@@ -1,0 +1,167 @@
+//@version=5
+indicator("Gabriel SMC 5min v4 - Liquidity + FVG", overlay=true, max_boxes_count=100, max_lines_count=100, max_labels_count=100)
+
+lookback  = input.int(20,      "Liquidity Lookback (candles)", minval=5, maxval=50)
+sl_buffer = input.float(0.00050, "SL Buffer",                  step=0.00001)
+rr1       = input.float(2.0,   "TP1 Risk/Reward",              step=0.5)
+rr2       = input.float(3.0,   "TP2 Risk/Reward",              step=0.5)
+
+bull_fvg_color = input.color(color.new(color.green, 75), "Bullish FVG Color")
+bear_fvg_color = input.color(color.new(color.red,   75), "Bearish FVG Color")
+liq_color      = input.color(color.orange,               "Liquidity Line Color")
+
+is_weekday  = dayofweek != dayofweek.saturday and dayofweek != dayofweek.sunday
+est_hour    = hour(time, "America/New_York")
+est_min     = minute(time, "America/New_York")
+est_time    = est_hour * 100 + est_min
+in_killzone = est_time >= 900 and est_time <= 1130 and is_weekday
+
+bgcolor(in_killzone ? color.new(color.yellow, 93) : na, title="NY Killzone")
+
+prev_high = ta.highest(high, lookback)[1]
+prev_low  = ta.lowest(low,   lookback)[1]
+
+if ta.pivothigh(high, lookback, lookback)
+    line.new(bar_index - lookback, high[lookback], bar_index + 30, high[lookback], color=liq_color, style=line.style_dashed, width=1)
+
+if ta.pivotlow(low, lookback, lookback)
+    line.new(bar_index - lookback, low[lookback], bar_index + 30, low[lookback], color=liq_color, style=line.style_dashed, width=1)
+
+// =============================================================================
+// SWEEP DETECTION — 3 types
+// =============================================================================
+
+// Type 1 — Wick sweep: wick crosses level, body closes back on the SAME candle
+sweep_low_t1  = low  < prev_low  and close > prev_low
+sweep_high_t1 = high > prev_high and close < prev_high
+
+// Type 2 — Full body sweep: entire candle closes past level, NEXT candle closes back
+sweep_low_t2  = close[1] < prev_low  and close > prev_low
+sweep_high_t2 = close[1] > prev_high and close < prev_high
+
+// Type 3 — Build sweep: 2-5 candles consolidate past level, current candle closes back
+below_count = (close[1] < prev_low  ? 1 : 0) + (close[2] < prev_low  ? 1 : 0) +
+              (close[3] < prev_low  ? 1 : 0) + (close[4] < prev_low  ? 1 : 0) +
+              (close[5] < prev_low  ? 1 : 0)
+above_count = (close[1] > prev_high ? 1 : 0) + (close[2] > prev_high ? 1 : 0) +
+              (close[3] > prev_high ? 1 : 0) + (close[4] > prev_high ? 1 : 0) +
+              (close[5] > prev_high ? 1 : 0)
+
+sweep_low_t3  = below_count >= 2 and close > prev_low
+sweep_high_t3 = above_count >= 2 and close < prev_high
+
+sweep_low  = sweep_low_t1  or sweep_low_t2  or sweep_low_t3
+sweep_high = sweep_high_t1 or sweep_high_t2 or sweep_high_t3
+
+// SL anchor: deepest wick of the full sweep area (most conservative)
+// Priority: Type 3 (multi-candle low/high) > Type 2 (prev candle) > Type 1 (current wick)
+sweep_low_extreme  = sweep_low_t3  ? ta.lowest(low,   6) :
+                     sweep_low_t2  ? math.min(low, low[1]) : low
+sweep_high_extreme = sweep_high_t3 ? ta.highest(high, 6) :
+                     sweep_high_t2 ? math.max(high, high[1]) : high
+
+// =============================================================================
+
+var float sweep_low_price  = na
+var float sweep_high_price = na
+var int   last_sweep_bar   = na
+var bool  last_sweep_bull  = false
+
+if sweep_low
+    sweep_low_price  := sweep_low_extreme
+    last_sweep_bar   := bar_index
+    last_sweep_bull  := true
+
+if sweep_high
+    sweep_high_price := sweep_high_extreme
+    last_sweep_bar   := bar_index
+    last_sweep_bull  := false
+
+bars_since_sweep = bar_index - last_sweep_bar
+sweep_recent     = not na(last_sweep_bar) and bars_since_sweep >= 1 and bars_since_sweep <= 6
+
+c1_bull = close[1] > open[1]
+c1_bear = close[1] < open[1]
+
+bull_fvg_gap    = low[2] > high[0]
+bull_fvg_mid_ok = c1_bull
+bull_fvg_above  = not na(sweep_low_price) and low[2] > sweep_low_price
+bull_fvg_valid  = bull_fvg_gap and bull_fvg_mid_ok and bull_fvg_above and sweep_recent and last_sweep_bull and in_killzone
+
+bull_fvg_top    = low[2]
+bull_fvg_bottom = high[0]
+
+bear_fvg_gap    = high[2] < low[0]
+bear_fvg_mid_ok = c1_bear
+bear_fvg_below  = not na(sweep_high_price) and high[2] < sweep_high_price
+bear_fvg_valid  = bear_fvg_gap and bear_fvg_mid_ok and bear_fvg_below and sweep_recent and not last_sweep_bull and in_killzone
+
+bear_fvg_top    = low[0]
+bear_fvg_bottom = high[2]
+
+var float saved_bull_top    = na
+var float saved_bull_bottom = na
+var float saved_bull_sl     = na
+var float saved_bear_top    = na
+var float saved_bear_bottom = na
+var float saved_bear_sl     = na
+
+if bull_fvg_valid
+    saved_bull_top    := bull_fvg_top
+    saved_bull_bottom := bull_fvg_bottom
+    saved_bull_sl     := sweep_low_price - sl_buffer
+    box.new(bar_index - 2, bull_fvg_top, bar_index + 20, bull_fvg_bottom, border_color=color.green, bgcolor=bull_fvg_color, border_width=1, text="FVG BUY 5m", text_color=color.green, text_size=size.small)
+
+if bear_fvg_valid
+    saved_bear_top    := bear_fvg_top
+    saved_bear_bottom := bear_fvg_bottom
+    saved_bear_sl     := sweep_high_price + sl_buffer
+    box.new(bar_index - 2, bear_fvg_top, bar_index + 20, bear_fvg_bottom, border_color=color.red, bgcolor=bear_fvg_color, border_width=1, text="FVG SELL 5m", text_color=color.red, text_size=size.small)
+
+buy_signal  = not na(saved_bull_top) and close <= saved_bull_top and close >= saved_bull_bottom and in_killzone and barstate.isconfirmed
+sell_signal = not na(saved_bear_top) and close >= saved_bear_bottom and close <= saved_bear_top and in_killzone and barstate.isconfirmed
+
+buy_sl  = nz(saved_bull_sl, close - sl_buffer * 2)
+buy_tp1 = close + (close - buy_sl) * rr1
+buy_tp2 = close + (close - buy_sl) * rr2
+
+sell_sl  = nz(saved_bear_sl, close + sl_buffer * 2)
+sell_tp1 = close - (sell_sl - close) * rr1
+sell_tp2 = close - (sell_sl - close) * rr2
+
+if buy_signal
+    line.new(bar_index, close, bar_index + 20, close, color=color.white, style=line.style_solid, width=2)
+    label.new(bar_index + 20, close, "ENTRY: " + str.tostring(close, "#.#####"), color=color.white, textcolor=color.black, style=label.style_label_left, size=size.small)
+    line.new(bar_index, buy_sl, bar_index + 20, buy_sl, color=color.red, style=line.style_dashed, width=1)
+    label.new(bar_index + 20, buy_sl, "SL: " + str.tostring(buy_sl, "#.#####"), color=color.red, textcolor=color.white, style=label.style_label_left, size=size.small)
+    line.new(bar_index, buy_tp1, bar_index + 20, buy_tp1, color=color.green, style=line.style_dashed, width=1)
+    label.new(bar_index + 20, buy_tp1, "TP1: " + str.tostring(buy_tp1, "#.#####"), color=color.green, textcolor=color.white, style=label.style_label_left, size=size.small)
+    line.new(bar_index, buy_tp2, bar_index + 20, buy_tp2, color=color.teal, style=line.style_dashed, width=1)
+    label.new(bar_index + 20, buy_tp2, "TP2: " + str.tostring(buy_tp2, "#.#####"), color=color.teal, textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    alert('{"pair": "' + syminfo.ticker + '", "direction": "BUY", "entry": "' + str.tostring(close, "#.#####") + '", "sl": "' + str.tostring(buy_sl, "#.#####") + '", "tp1": "' + str.tostring(buy_tp1, "#.#####") + '", "tp2": "' + str.tostring(buy_tp2, "#.#####") + '", "timeframe": "5min"}', alert.freq_once_per_bar_close)
+
+    saved_bull_top    := na
+    saved_bull_bottom := na
+    sweep_low_price   := na
+    last_sweep_bar    := na
+
+if sell_signal
+    line.new(bar_index, close, bar_index + 20, close, color=color.white, style=line.style_solid, width=2)
+    label.new(bar_index + 20, close, "ENTRY: " + str.tostring(close, "#.#####"), color=color.white, textcolor=color.black, style=label.style_label_left, size=size.small)
+    line.new(bar_index, sell_sl, bar_index + 20, sell_sl, color=color.red, style=line.style_dashed, width=1)
+    label.new(bar_index + 20, sell_sl, "SL: " + str.tostring(sell_sl, "#.#####"), color=color.red, textcolor=color.white, style=label.style_label_left, size=size.small)
+    line.new(bar_index, sell_tp1, bar_index + 20, sell_tp1, color=color.green, style=line.style_dashed, width=1)
+    label.new(bar_index + 20, sell_tp1, "TP1: " + str.tostring(sell_tp1, "#.#####"), color=color.green, textcolor=color.white, style=label.style_label_left, size=size.small)
+    line.new(bar_index, sell_tp2, bar_index + 20, sell_tp2, color=color.teal, style=line.style_dashed, width=1)
+    label.new(bar_index + 20, sell_tp2, "TP2: " + str.tostring(sell_tp2, "#.#####"), color=color.teal, textcolor=color.white, style=label.style_label_left, size=size.small)
+
+    alert('{"pair": "' + syminfo.ticker + '", "direction": "SELL", "entry": "' + str.tostring(close, "#.#####") + '", "sl": "' + str.tostring(sell_sl, "#.#####") + '", "tp1": "' + str.tostring(sell_tp1, "#.#####") + '", "tp2": "' + str.tostring(sell_tp2, "#.#####") + '", "timeframe": "5min"}', alert.freq_once_per_bar_close)
+
+    saved_bear_top    := na
+    saved_bear_bottom := na
+    sweep_high_price  := na
+    last_sweep_bar    := na
+
+plotshape(buy_signal,  title="BUY",  location=location.belowbar, style=shape.labelup,   color=color.green, text="BUY",  textcolor=color.white, size=size.normal)
+plotshape(sell_signal, title="SELL", location=location.abovebar, style=shape.labeldown, color=color.red,   text="SELL", textcolor=color.white, size=size.normal)
