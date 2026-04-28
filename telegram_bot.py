@@ -1,5 +1,85 @@
 import requests
 import config
+import csv
+import os
+
+JOURNAL_PATH = 'logs/trade_journal.csv'
+
+def send_stats(chat_id):
+    trades = []
+    if os.path.isfile(JOURNAL_PATH):
+        with open(JOURNAL_PATH, newline='') as f:
+            trades = list(csv.DictReader(f))
+
+    total     = len(trades)
+    wins      = sum(1 for t in trades if t.get('Result', '').upper() == 'WIN')
+    losses    = sum(1 for t in trades if t.get('Result', '').upper() == 'LOSS')
+    breakeven = sum(1 for t in trades if t.get('Result', '').upper() == 'BREAKEVEN')
+    pending   = sum(1 for t in trades if t.get('Result', '').upper() == 'PENDING')
+
+    closed    = wins + losses + breakeven
+    win_rate  = (wins / closed * 100) if closed > 0 else 0.0
+
+    message = f"""📊 *PbaTrades — Journal Stats*
+
+📈 Total Signals: *{total}*
+✅ Wins: *{wins}*
+❌ Losses: *{losses}*
+➖ Breakeven: *{breakeven}*
+⏳ Pending: *{pending}*
+
+🎯 Win Rate: *{win_rate:.1f}%* _(of {closed} closed trades)_
+
+_Trade at your own risk. Manage your risk properly._"""
+
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage"
+    response = requests.post(url, json={
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    })
+    return response.json()
+
+
+def send_journal(chat_id):
+    trades = []
+    if os.path.isfile(JOURNAL_PATH):
+        with open(JOURNAL_PATH, newline='') as f:
+            trades = list(csv.DictReader(f))
+
+    if not trades:
+        requests.post(
+            f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": "📭 No trades in the journal yet."}
+        )
+        return
+
+    result_icons = {
+        'WIN':       '✅',
+        'LOSS':      '❌',
+        'BREAKEVEN': '➖',
+        'PENDING':   '⏳',
+    }
+
+    lines = ["📒 *Last 5 Trades*"]
+    for i, t in enumerate(reversed(trades[-5:]), 1):
+        result    = t.get('Result', 'UNKNOWN').upper()
+        direction = t.get('Direction', '').upper()
+        dir_icon  = '🟢' if direction == 'BUY' else '🔴'
+
+        lines.append(
+            f"\n{i}. {dir_icon} *{t.get('Pair')}* | {t.get('Date')}\n"
+            f"Direction: {direction}\n"
+            f"Entry: {t.get('Entry')} | SL: {t.get('SL')}\n"
+            f"TP1: {t.get('TP1')} | TP2: {t.get('TP2')}\n"
+            f"Result: {result_icons.get(result, '❓')} {result}"
+        )
+
+    requests.post(
+        f"https://api.telegram.org/bot{config.TELEGRAM_TOKEN}/sendMessage",
+        json={"chat_id": chat_id, "text": "\n".join(lines), "parse_mode": "Markdown"}
+    )
+
 
 def send_signal(pair, direction, entry, sl, tp1, tp2, timeframe):
     

@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from webhook import app
-from telegram_bot import send_position_size
+from telegram_bot import send_position_size, send_stats, send_journal
 import config
 
 # Handle /size command from Telegram
@@ -13,8 +13,16 @@ def telegram_update():
         chat_id = message['chat']['id']
         text = message.get('text', '')
 
+        # Handle /stats command
+        if text.startswith('/stats'):
+            send_stats(chat_id)
+
+        # Handle /journal command
+        elif text.startswith('/journal'):
+            send_journal(chat_id)
+
         # Handle /size command
-        if text.startswith('/size'):
+        elif text.startswith('/size'):
             parts = text.split()
             if len(parts) == 2:
                 balance = float(parts[1])
