@@ -1,0 +1,15 @@
+# Secret config - never push this
+config.py
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environment
+venv/
+
+# Logs
+logs/
+
+# Environment files
+.env
